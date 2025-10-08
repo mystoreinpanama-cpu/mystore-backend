@@ -10,13 +10,13 @@ import Jimp from "jimp";
 
 dotenv.config();
 
-// Modelos configurables por ENV
-const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";   // conversación/razonamiento
-const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";  // visión (4o o 4o-mini recomendado)
+// ===== Modelos configurables =====
+const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";      // conversación
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini"; // JSON Mode estable
 
-// Config de imágenes
+// ===== Imagen: límites y compresión =====
 const MAX_IMAGE_BYTES  = parseInt(process.env.MAX_IMAGE_BYTES  || "4000000", 10); // ~4MB
-const IMAGE_MAX_WIDTH  = parseInt(process.env.IMAGE_MAX_WIDTH  || "1024", 10);    // reduce a 1024px
+const IMAGE_MAX_WIDTH  = parseInt(process.env.IMAGE_MAX_WIDTH  || "1024", 10);
 const ALLOW_HTTP_IMAGE = (process.env.ALLOW_NON_HTTPS_IMAGES || "false") === "true";
 
 const app = express();
@@ -24,53 +24,42 @@ app.use(cors());
 app.use(bodyParser.json());
 const PORT = process.env.PORT || 10000;
 
-/* ======================================
-   Helpers
-====================================== */
+/* ───────────────────────── Helpers ───────────────────────── */
+
 const isImageContentType = (ct) => (ct || "").toLowerCase().startsWith("image/");
 
-// Descarga una URL de imagen, valida y comprime (Jimp), devuelve data URI JPG base64
 async function fetchImageToDataURI(url) {
   if (!url) throw new Error("URL vacía");
   if (!ALLOW_HTTP_IMAGE && !/^https:\/\//i.test(url)) {
-    throw new Error("Solo se permiten imágenes HTTPS (config ALLOW_NON_HTTPS_IMAGES=true para permitir HTTP)");
+    throw new Error("Solo HTTPS permitido (set ALLOW_NON_HTTPS_IMAGES=true para permitir HTTP)");
   }
   const resp = await axios.get(url, {
     responseType: "arraybuffer",
     headers: { "Accept": "image/*", "User-Agent": "mystore-backend/1.0" }
   });
-
   const ct = (resp.headers["content-type"] || "").toLowerCase();
   if (!isImageContentType(ct)) {
     let sample = "";
     try { sample = Buffer.from(resp.data).toString("utf8").slice(0, 200); } catch {}
-    const msg = `La URL no devolvió una imagen (content-type=${ct || "desconocido"})`;
-    const err = new Error(msg);
+    const err = new Error(`La URL no devolvió una imagen (content-type=${ct || "desconocido"})`);
     err.sample = sample;
     throw err;
   }
-
-  // Comprimir / re-escalar a JPG 80% y máx. width
+  // Comprimir: ancho máx + JPG 80%
   let img = await Jimp.read(resp.data);
-  if (img.bitmap.width > IMAGE_MAX_WIDTH) {
-    img = img.resize(IMAGE_MAX_WIDTH, Jimp.AUTO);
-  }
+  if (img.bitmap.width > IMAGE_MAX_WIDTH) img = img.resize(IMAGE_MAX_WIDTH, Jimp.AUTO);
   const buf = await img.quality(80).getBufferAsync(Jimp.MIME_JPEG);
   if (buf.length > MAX_IMAGE_BYTES) {
-    const msg = `Imagen demasiado grande tras compresión (${buf.length} bytes > ${MAX_IMAGE_BYTES})`;
-    const err = new Error(msg);
+    const err = new Error(`Imagen demasiado grande tras compresión (${buf.length} > ${MAX_IMAGE_BYTES})`);
     err.code = "IMAGE_TOO_LARGE";
     throw err;
   }
-  const b64 = buf.toString("base64");
-  return `data:image/jpeg;base64,${b64}`;
+  return `data:image/jpeg;base64,${buf.toString("base64")}`;
 }
 
-// Construye query de catálogo según dominio/atributos detectados
 function buildQueryFromAttributes(a = {}) {
   const flat = (x) => (Array.isArray(x) ? x : (x ? [x] : []));
-  const add = (...xs) => xs.filter(Boolean).join(" ");
-
+  const add  = (...xs) => xs.filter(Boolean).join(" ");
   switch ((a.domain || "").toLowerCase()) {
     case "apparel":
     case "shapewear":
@@ -94,34 +83,34 @@ function buildQueryFromAttributes(a = {}) {
   }
 }
 
-/* ======================================
-   Salud / Diagnóstico
-====================================== */
-app.get("/", (_, res) => {
-  res.json({ message: "✅ Backend activo: ManyChat + WhatsApp + ChatGPT conectado correctamente." });
-});
+const SYS_SCHEMA = `Eres un analista de PRODUCTOS GENERALES para ecommerce (moda, fajas, electrónica, repuestos auto/cel, cámaras, computación, muebles, hogar, libros, deporte, juguetes, belleza, etc).
+Devuelves SOLO JSON (sin texto adicional). Si no reconoces el ítem, usa domain:"other" y rellena keywords.
+{
+  "domain": "apparel|shapewear|electronics|phones|phone_parts|auto_parts|cameras|computers|furniture|home|books|beauty|toys|sports|other",
+  "category": "", "type": "", "brand": "", "model": "",
+  "colors": [], "materials": [], "details": [], "features": [],
+  "compatibility": [], "part_number": "",
+  "size": "", "length": "", "fit": "", "style": "",
+  "title": "", "author": "", "language": "", "topic": "",
+  "keywords": ""
+}`;
+
+/* ──────────────────────── Salud / Diagnóstico ──────────────────────── */
+app.get("/", (_, res) => res.json({ message: "✅ Backend activo: ManyChat + WhatsApp + ChatGPT conectado correctamente." }));
 app.get("/webhook", (_, res) => res.json({ ok: true, hint: "Usa POST a /webhook" }));
 
-/* ======================================
-   Webhook eco (pruebas)
-====================================== */
-app.post("/webhook", async (req, res) => {
+/* ───────────────────────── Webhook eco (pruebas) ───────────────────────── */
+app.post("/webhook", (req, res) => {
   const { message, imageUrl, audioUrl, channel } = req.body || {};
   console.log("📩 Nuevo mensaje:", { message, imageUrl, audioUrl, channel });
   res.json({ reply: `Hola 👋, recibí tu mensaje: "${message || "media"}" desde ${channel || "desconocido"}` });
 });
 
-/* ======================================
-   Chat de texto (modelo de conversación)
-====================================== */
+/* ───────────────────────── Chat de texto ───────────────────────── */
 app.post("/chat/complete", async (req, res) => {
   try {
     const { messages = [], system = "Eres el asistente de MY STORE IN PANAMÁ." } = req.body || {};
-    const payload = {
-      model: TEXT_MODEL,
-      messages: [{ role: "system", content: system }, ...messages],
-      temperature: 0.3
-    };
+    const payload = { model: TEXT_MODEL, messages: [{ role: "system", content: system }, ...messages], temperature: 0.3 };
     const { data } = await axios.post("https://api.openai.com/v1/chat/completions", payload, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     });
@@ -131,9 +120,7 @@ app.post("/chat/complete", async (req, res) => {
   }
 });
 
-/* ======================================
-   Voz → Texto (Whisper)
-====================================== */
+/* ───────────────────────── Voz → Texto (Whisper) ───────────────────────── */
 app.post("/voice/transcribe", async (req, res) => {
   try {
     const { audioUrl } = req.body || {};
@@ -158,16 +145,14 @@ app.post("/voice/transcribe", async (req, res) => {
   }
 });
 
-/* ======================================
-   Visión (imagen → atributos multi-categoría)
-====================================== */
+/* ───────────────────────── Visión (imagen → atributos) ───────────────────────── */
 app.post("/vision/analyze", async (req, res) => {
   try {
     const { imageUrl, imageBase64, prompt } = req.body || {};
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Falta OPENAI_API_KEY" });
     if (!imageUrl && !imageBase64)   return res.status(400).json({ error: "Falta imageUrl o imageBase64" });
 
-    // Data URI
+    // 1) Normalizar a data URI
     let dataUrl;
     if (imageBase64) {
       const base = imageBase64.startsWith("data:") ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
@@ -179,57 +164,44 @@ app.post("/vision/analyze", async (req, res) => {
       dataUrl = await fetchImageToDataURI(imageUrl);
     }
 
-    // Pedimos salida JSON estricta con taxonomía amplia
-    const system = `Eres un clasificador y analista de PRODUCTOS GENERALES para ecommerce (moda, fajas, electrónica, repuestos auto/cel, cámaras, computación, muebles, hogar, libros, deporte, juguetes, belleza, etc).
-Devuelves SOLO JSON con la siguiente estructura. Si no reconoces una prenda/ítem, usa domain:"other" y rellena keywords.
-{
-  "domain": "apparel|shapewear|electronics|phones|phone_parts|auto_parts|cameras|computers|furniture|home|books|beauty|toys|sports|other",
-  "category": "",
-  "type": "",
-  "brand": "",
-  "model": "",
-  "colors": [],
-  "materials": [],
-  "details": [],
-  "features": [],
-  "compatibility": [],
-  "part_number": "",
-  "size": "",
-  "length": "",
-  "fit": "",
-  "style": "",
-  "title": "",
-  "author": "",
-  "language": "",
-  "topic": "",
-  "keywords": ""
-}`;
-
-    const userText =
-      (prompt || "Analiza el artículo para venta online.") +
-      "\nDevuelve el JSON EXACTO con los campos arriba indicados.";
-
-    const payload = {
+    // 2) Llamada 1: JSON Mode con modelo vision estable (gpt-4o-mini)
+    const payload1 = {
       model: VISION_MODEL,
       temperature: 0.2,
       max_tokens: 600,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: system },
+        { role: "system", content: SYS_SCHEMA },
         { role: "user", content: [
-          { type: "text", text: userText },
+          { type: "text", text: (prompt || "Analiza el artículo para venta online.") + "\nDevuelve SOLO el JSON indicado." },
           { type: "image_url", image_url: { url: dataUrl } }
         ] }
       ]
     };
-
-    const { data } = await axios.post("https://api.openai.com/v1/chat/completions", payload, {
+    let resp = await axios.post("https://api.openai.com/v1/chat/completions", payload1, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }
     });
+    let content = resp?.data?.choices?.[0]?.message?.content || "{}";
+    let attrs;
+    try { attrs = JSON.parse(content); } catch { attrs = {}; }
 
-    let attrs = {};
-    try { attrs = JSON.parse(data?.choices?.[0]?.message?.content || "{}"); }
-    catch { attrs = { domain: "other", raw: data?.choices?.[0]?.message?.content || "" }; }
+    // 3) Fallback: si quedó vacío o sin domain, reintenta estructurar con TEXT_MODEL
+    if (!attrs || !attrs.domain) {
+      const payload2 = {
+        model: TEXT_MODEL,
+        temperature: 0.0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYS_SCHEMA },
+          { role: "user", content: `Estructura a JSON (exacto al esquema) este texto:\n${content || "(sin texto)"}\nDevuelve SOLO JSON.` }
+        ]
+      };
+      const r2 = await axios.post("https://api.openai.com/v1/chat/completions", payload2, {
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }
+      });
+      try { attrs = JSON.parse(r2?.data?.choices?.[0]?.message?.content || "{}"); }
+      catch { attrs = { domain: "other", raw: content || "" }; }
+    }
 
     return res.json({ attributes: attrs });
   } catch (e) {
@@ -239,32 +211,26 @@ Devuelves SOLO JSON con la siguiente estructura. Si no reconoces una prenda/íte
   }
 });
 
-/* ======================================
-   Búsqueda en catálogo (Shopify)
-====================================== */
+/* ───────────────────────── Búsqueda en catálogo (Shopify) ───────────────────────── */
 app.post("/catalog/search", async (req, res) => {
   try {
     const { query = "" } = req.body || {};
     if (!process.env.SHOPIFY_STORE_DOMAIN || !process.env.SHOPIFY_STOREFRONT_TOKEN) {
       return res.json({ results: [], note: "Faltan credenciales Shopify (SHOPIFY_STORE_DOMAIN/STOREFRONT_TOKEN).", query });
     }
-
     const gql = {
       query: `
         query($q: String!) {
           products(first: 5, query: $q) {
-            edges {
-              node {
-                id title handle
-                images(first:1){ edges{ node{ url } } }
-                variants(first:10){ edges{ node{ title availableForSale price{ amount currencyCode } } } }
-              }
-            }
+            edges { node {
+              id title handle
+              images(first:1){ edges{ node{ url } } }
+              variants(first:10){ edges{ node{ title availableForSale price{ amount currencyCode } } } }
+            } }
           }
         }`,
       variables: { q: query }
     };
-
     const r = await axios.post(
       `https://${process.env.SHOPIFY_STORE_DOMAIN}/api/2024-04/graphql.json`,
       gql,
@@ -273,7 +239,6 @@ app.post("/catalog/search", async (req, res) => {
           "Content-Type": "application/json"
         } }
     );
-
     const items = (r.data?.data?.products?.edges || []).map(e => {
       const n = e.node;
       return {
@@ -288,25 +253,22 @@ app.post("/catalog/search", async (req, res) => {
         }))
       };
     });
-
     res.json({ results: items, query });
   } catch (e) {
     res.status(500).json({ error: "Error buscando en catálogo", details: e?.response?.data || e.message });
   }
 });
 
-/* ======================================
-   Foto → Atributos → Catálogo (1 paso)
-====================================== */
+/* ───────────────────────── Foto → Atributos → Catálogo (1 paso) ───────────────────────── */
 app.post("/by-image/search", async (req, res) => {
   try {
     const { data: a } = await axios.post(`${req.protocol}://${req.get("host")}/vision/analyze`, req.body, {
       headers: { "Content-Type": "application/json" }
     });
-    const attrs = a?.attributes || {};
-    const query = buildQueryFromAttributes(attrs);
+    const attrs  = a?.attributes || {};
+    const query  = buildQueryFromAttributes(attrs);
+    let results  = [];
 
-    let results = [];
     if (process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_STOREFRONT_TOKEN && query) {
       const { data: s } = await axios.post(`${req.protocol}://${req.get("host")}/catalog/search`, { query }, {
         headers: { "Content-Type": "application/json" }
@@ -319,5 +281,4 @@ app.post("/by-image/search", async (req, res) => {
   }
 });
 
-/* ====================================== */
 app.listen(PORT, () => console.log(`🚀 Servidor en marcha en puerto ${PORT}`));
