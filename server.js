@@ -159,3 +159,42 @@ app.post("/catalog/search", async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`🚀 Servidor en marcha en puerto ${PORT}`));
+// === IA: ANÁLISIS DE IMAGEN (Vision) — con modelos configurables y mejor logging ===
+app.post("/vision/analyze", async (req, res) => {
+  try {
+    const { imageUrl, prompt } = req.body || {};
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Falta OPENAI_API_KEY en el entorno" });
+    }
+    if (!imageUrl) return res.status(400).json({ error: "Falta imageUrl" });
+
+    const payload = {
+      model: VISION_MODEL,      // <- usa la variable de entorno
+      max_tokens: 400,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: "Eres experto en moda/productos. Devuelve atributos claros y keywords." },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt || "Extrae: categoría, tipo, color, tejido, corte, detalles distintivos y keywords." },
+            { type: "image_url", image_url: { url: imageUrl } }
+          ]
+        }
+      ]
+    };
+
+    const { data } = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      payload,
+      { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" } }
+    );
+
+    const text = data?.choices?.[0]?.message?.content?.trim() || "";
+    return res.json({ attributes: text });
+  } catch (e) {
+    const details = e?.response?.data || { message: e.message };
+    console.error("OpenAI vision error:", details);
+    return res.status(500).json({ error: "OpenAI error", details });
+  }
+});
