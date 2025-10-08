@@ -8,23 +8,23 @@ import fs from "fs";
 import path from "path";
 import Jimp from "jimp";
 
-// === NUEVO (audio robusto) ===
+// === Audio robusto: valida/convierte cualquier formato a WAV 16 kHz mono ===
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import { fileTypeFromBuffer } from "file-type";
 ffmpeg.setFfmpegPath(ffmpegPath);
-// ==============================
 
 dotenv.config();
 
 // ===== Modelos configurables =====
-const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";      // conversación
-const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini"; // JSON Mode estable
+const TEXT_MODEL        = process.env.OPENAI_TEXT_MODEL        || "gpt-5";       // conversación
+const VISION_MODEL      = process.env.OPENAI_VISION_MODEL      || "gpt-4o-mini"; // visión estable con JSON Mode
+const STRUCTURE_MODEL   = process.env.OPENAI_STRUCTURE_MODEL   || "gpt-4o-mini"; // para re-estructurar JSON si hace falta
 
 // ===== Imagen: límites y compresión =====
-const MAX_IMAGE_BYTES  = parseInt(process.env.MAX_IMAGE_BYTES  || "4000000", 10); // ~4MB
-const IMAGE_MAX_WIDTH  = parseInt(process.env.IMAGE_MAX_WIDTH  || "1024", 10);
-const ALLOW_HTTP_IMAGE = (process.env.ALLOW_NON_HTTPS_IMAGES || "false") === "true";
+const MAX_IMAGE_BYTES   = parseInt(process.env.MAX_IMAGE_BYTES  || "4000000", 10); // ~4MB
+const IMAGE_MAX_WIDTH   = parseInt(process.env.IMAGE_MAX_WIDTH  || "1024", 10);
+const ALLOW_HTTP_IMAGE  = (process.env.ALLOW_NON_HTTPS_IMAGES || "false") === "true";
 
 const app = express();
 app.use(cors());
@@ -116,11 +116,31 @@ app.post("/webhook", (req, res) => {
 /* ───────────────────────── Chat de texto ───────────────────────── */
 app.post("/chat/complete", async (req, res) => {
   try {
-    const { messages = [], system = "Eres el asistente de MY STORE IN PANAMÁ." } = req.body || {};
-    const payload = { model: TEXT_MODEL, messages: [{ role: "system", content: system }, ...messages], temperature: 0.3 };
+    const {
+      messages = [],
+      system = "Eres el asistente de MY STORE IN PANAMÁ.",
+      temperature,
+      model // opcional para override puntual
+    } = req.body || {};
+
+    const modelToUse = (model || TEXT_MODEL || "").trim();
+    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-5");
+
+    const payload = {
+      model: modelToUse,
+      messages: [{ role: "system", content: system }, ...messages]
+    };
+
+    // GPT-5: no enviar temperature/response_format ni otros hiperparámetros
+    if (!isGPT5) {
+      const tempToUse = typeof temperature === "number" ? temperature : 0.3;
+      payload.temperature = tempToUse;
+    }
+
     const { data } = await axios.post("https://api.openai.com/v1/chat/completions", payload, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     });
+
     res.json({ output: data?.choices?.[0]?.message?.content || "" });
   } catch (e) {
     res.status(500).json({ error: "OpenAI chat error", details: e?.response?.data || e.message });
@@ -129,9 +149,9 @@ app.post("/chat/complete", async (req, res) => {
 
 /* ───────────────────────── Voz → Texto (Whisper) — ROBUSTO ───────────────────────── */
 /*
-  Acepta: audioUrl (https directo, normaliza Dropbox) o audioBase64 (data URI o base64 crudo).
-  Descarga/guarda el archivo, valida que sea audio/video real (MIME y/o contenido),
-  y LO CONVIERTE SIEMPRE a WAV 16 kHz mono con ffmpeg antes de enviarlo a Whisper.
+  Acepta: audioUrl (https directo; normaliza Dropbox) o audioBase64 (data URI o base64 crudo).
+  Descarga/guarda, valida que sea audio/video real (MIME y/o contenido),
+  y convierte SIEMPRE a WAV 16 kHz mono con ffmpeg antes de enviarlo a Whisper.
 */
 app.post("/voice/transcribe", async (req, res) => {
   try {
@@ -139,7 +159,6 @@ app.post("/voice/transcribe", async (req, res) => {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Falta OPENAI_API_KEY" });
     if (!audioUrl && !audioBase64)   return res.status(400).json({ error: "Falta audioUrl o audioBase64" });
 
-    // Normaliza enlaces de Dropbox a "raw"
     const normalizeAudioUrl = (u) => {
       try {
         const url = new URL(u);
@@ -166,7 +185,7 @@ app.post("/voice/transcribe", async (req, res) => {
         maxRedirects: 5
       });
 
-      // Detecta MIME real por contenido (aunque el host mienta)
+      // Detecta MIME real por contenido
       const type = await fileTypeFromBuffer(r.data).catch(() => null);
       const headerCT = (r.headers["content-type"] || "").toLowerCase();
       const isAudioVideo =
@@ -185,7 +204,7 @@ app.post("/voice/transcribe", async (req, res) => {
       fs.writeFileSync(tmpIn, r.data);
     }
 
-    // Transcodifica SIEMPRE a WAV 16 kHz mono (formato “a prueba de todo” para Whisper)
+    // Transcodifica a WAV 16 kHz mono
     await new Promise((resolve, reject) => {
       ffmpeg(tmpIn)
         .noVideo()
@@ -233,7 +252,7 @@ app.post("/vision/analyze", async (req, res) => {
       dataUrl = await fetchImageToDataURI(imageUrl);
     }
 
-    // 2) Llamada 1: JSON Mode con modelo vision estable (gpt-4o-mini)
+    // 2) JSON Mode con modelo vision
     const payload1 = {
       model: VISION_MODEL,
       temperature: 0.2,
@@ -254,17 +273,19 @@ app.post("/vision/analyze", async (req, res) => {
     let attrs;
     try { attrs = JSON.parse(content); } catch { attrs = {}; }
 
-    // 3) Fallback: si quedó vacío o sin domain, reintenta estructurar con TEXT_MODEL
+    // 3) Fallback: si quedó vacío o sin domain, estructura con STRUCTURE_MODEL
     if (!attrs || !attrs.domain) {
+      const isGPT5Text = (STRUCTURE_MODEL || "").toLowerCase().startsWith("gpt-5");
       const payload2 = {
-        model: TEXT_MODEL,
-        temperature: 0.0,
-        response_format: { type: "json_object" },
+        model: STRUCTURE_MODEL,
         messages: [
           { role: "system", content: SYS_SCHEMA },
           { role: "user", content: `Estructura a JSON (exacto al esquema) este texto:\n${content || "(sin texto)"}\nDevuelve SOLO JSON.` }
         ]
       };
+      // Solo agregamos response_format si el modelo lo soporta (no GPT-5)
+      if (!isGPT5Text) payload2.response_format = { type: "json_object" };
+
       const r2 = await axios.post("https://api.openai.com/v1/chat/completions", payload2, {
         headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }
       });
