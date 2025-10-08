@@ -1,7 +1,7 @@
 {
   "name": "mystore-backend",
   "version": "1.0.0",
-  "description": "Micro backend para ManyChat + WhatsApp/IG/FB + Shopify + ChatGPT (voz, visión y búsqueda por imagen)",
+  "description": "Backend ManyChat + WhatsApp/IG/FB + Shopify + OpenAI (voz, visión, búsqueda por imagen)",
   "type": "module",
   "main": "server.js",
   "scripts": {
