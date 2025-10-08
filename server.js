@@ -8,36 +8,32 @@ import fs from "fs";
 import path from "path";
 
 dotenv.config();
-const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";
-const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";const app = express();
+
+// Modelos configurables vía variables de entorno
+const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";   // conversación
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";  // imágenes
+
+const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-
-// Modelos configurables por env (recomendado)
-const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";   // p/ conversación
-const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";  // p/ imágenes
 
 const PORT = process.env.PORT || 10000;
 
 /* =======================
    SALUD / DIAGNÓSTICO
 ======================= */
-// Healthcheck (GET /)
 app.get("/", (_, res) => {
   res.json({
     message: "✅ Backend activo: ManyChat + WhatsApp + ChatGPT conectado correctamente."
   });
 });
 
-// GET /webhook (debug opcional)
-app.get("/webhook", (_, res) => {
-  res.json({ ok: true, hint: "Usa POST a /webhook" });
-});
+// GET /webhook (debug opcional; confirma que pegas a la ruta)
+app.get("/webhook", (_, res) => res.json({ ok: true, hint: "Usa POST a /webhook" }));
 
 /* =======================
    ECHO WEBHOOK DE PRUEBA
 ======================= */
-// POST /webhook  (prueba con ManyChat/Postman)
 app.post("/webhook", async (req, res) => {
   const { message, imageUrl, audioUrl, channel } = req.body || {};
   console.log("📩 Nuevo mensaje:", { message, imageUrl, audioUrl, channel });
@@ -50,7 +46,7 @@ app.post("/webhook", async (req, res) => {
    IA – TRANSCRIPCIÓN (Whisper)
 ======================= */
 // POST /voice/transcribe
-// Body: { "audioUrl": "https://.../audio.ogg" } (url directa o firmada)
+// Body: { "audioUrl": "https://.../audio.ogg" } (URL directa o firmada)
 app.post("/voice/transcribe", async (req, res) => {
   try {
     const { audioUrl } = req.body || {};
@@ -83,7 +79,12 @@ app.post("/voice/transcribe", async (req, res) => {
   }
 });
 
-/// === IA: ANÁLISIS DE IMAGEN (Vision) — con límite de tamaño y mejor logging ===
+/* =======================
+   IA – VISIÓN (análisis de imagen)
+   Evita 'error while downloading' usando data URI + límite de tamaño
+======================= */
+// POST /vision/analyze
+// Body: { imageUrl: "https://...",  (o)  imageBase64: "data:...;base64,..." ,  prompt?: "..." }
 app.post("/vision/analyze", async (req, res) => {
   try {
     const { imageUrl, imageBase64, prompt } = req.body || {};
@@ -99,7 +100,6 @@ app.post("/vision/analyze", async (req, res) => {
 
     if (imageBase64) {
       const base = imageBase64.startsWith("data:") ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
-      // estimar tamaño a partir de base64 (4/3 del binario)
       const b64 = base.split(",")[1] || "";
       const estBytes = Math.floor((b64.length * 3) / 4);
       if (estBytes > MAX_IMAGE_BYTES) {
@@ -118,7 +118,7 @@ app.post("/vision/analyze", async (req, res) => {
     }
 
     const payload = {
-      model: VISION_MODEL, // p.ej. gpt-4o (configurable por env)
+      model: VISION_MODEL, // gpt-4o por defecto (configurable via env)
       max_tokens: 400,
       temperature: 0.2,
       messages: [
@@ -142,20 +142,20 @@ app.post("/vision/analyze", async (req, res) => {
     const text = data?.choices?.[0]?.message?.content?.trim() || "";
     return res.json({ attributes: text });
   } catch (e) {
-    // Decodifica errores tipo Buffer para ver el mensaje real
     let details = e?.response?.data;
     if (Buffer.isBuffer(details)) {
-      try { details = details.toString("utf8"); } catch { /* ignore */ }
+      try { details = details.toString("utf8"); } catch {}
     }
     console.error("Vision analyze error:", details || e.message);
     return res.status(500).json({ error: "OpenAI error", details });
   }
 });
+
 /* =======================
    BÚSQUEDA EN CATÁLOGO (Shopify)
 ======================= */
 // POST /catalog/search
-// Env necesarios: SHOPIFY_STORE_DOMAIN, SHOPIFY_STOREFRONT_TOKEN
+// Env: SHOPIFY_STORE_DOMAIN, SHOPIFY_STOREFRONT_TOKEN
 // Body: { "query": "faja colombiana negra talla M" }
 app.post("/catalog/search", async (req, res) => {
   try {
@@ -222,5 +222,4 @@ app.post("/catalog/search", async (req, res) => {
   }
 });
 
-// Start
 app.listen(PORT, () => console.log(`🚀 Servidor en marcha en puerto ${PORT}`));
