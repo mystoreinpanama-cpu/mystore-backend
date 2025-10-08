@@ -12,26 +12,50 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// Modelos configurables por env (recomendado)
+const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";   // p/ conversación
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";  // p/ imágenes
+
 const PORT = process.env.PORT || 10000;
 
-// --- Healthcheck (prueba rápida en el navegador) ---
+/* =======================
+   SALUD / DIAGNÓSTICO
+======================= */
+// Healthcheck (GET /)
 app.get("/", (_, res) => {
-  res.json({ message: "✅ Backend activo: ManyChat + WhatsApp + ChatGPT conectado correctamente." });
+  res.json({
+    message: "✅ Backend activo: ManyChat + WhatsApp + ChatGPT conectado correctamente."
+  });
 });
 
-// --- Webhook simple para pruebas con ManyChat/POSTMAN ---
+// GET /webhook (debug opcional)
+app.get("/webhook", (_, res) => {
+  res.json({ ok: true, hint: "Usa POST a /webhook" });
+});
+
+/* =======================
+   ECHO WEBHOOK DE PRUEBA
+======================= */
+// POST /webhook  (prueba con ManyChat/Postman)
 app.post("/webhook", async (req, res) => {
   const { message, imageUrl, audioUrl, channel } = req.body || {};
   console.log("📩 Nuevo mensaje:", { message, imageUrl, audioUrl, channel });
-  return res.json({ reply: `Hola 👋, recibí tu mensaje: "${message || "media"}" desde ${channel || "desconocido"}` });
+  return res.json({
+    reply: `Hola 👋, recibí tu mensaje: "${message || "media"}" desde ${channel || "desconocido"}`
+  });
 });
 
-/* =========  IA: TRANSCRIBIR NOTA DE VOZ (Whisper) =========
-   Body: { "audioUrl": "https://..." }  (URL pública/descargable)
-*/
+/* =======================
+   IA – TRANSCRIPCIÓN (Whisper)
+======================= */
+// POST /voice/transcribe
+// Body: { "audioUrl": "https://.../audio.ogg" } (url directa o firmada)
 app.post("/voice/transcribe", async (req, res) => {
   try {
     const { audioUrl } = req.body || {};
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Falta OPENAI_API_KEY en el entorno" });
+    }
     if (!audioUrl) return res.status(400).json({ error: "Falta audioUrl" });
 
     // Descarga temporal del audio
@@ -39,7 +63,7 @@ app.post("/voice/transcribe", async (req, res) => {
     const tmp = path.join("/tmp", `audio_${Date.now()}.ogg`);
     fs.writeFileSync(tmp, r.data);
 
-    // Llamada a Whisper
+    // Envío a Whisper
     const form = new FormData();
     form.append("model", "whisper-1");
     form.append("file", fs.createReadStream(tmp));
@@ -58,45 +82,73 @@ app.post("/voice/transcribe", async (req, res) => {
   }
 });
 
-/* =========  IA: ANALIZAR IMAGEN (Vision) =========
-   Body: { "imageUrl": "https://...", "prompt": "opcional" }
-   Devuelve atributos/keywords para buscar en catálogo
-*/
+/* =======================
+   IA – VISIÓN (análisis de imagen)
+   Evita 'error while downloading' usando data URI
+======================= */
+// POST /vision/analyze
+// Body: { imageUrl: "https://...",  (o)  imageBase64: "data:...base64...",  prompt?: "..." }
 app.post("/vision/analyze", async (req, res) => {
   try {
-    const { imageUrl, prompt } = req.body || {};
-    if (!imageUrl) return res.status(400).json({ error: "Falta imageUrl" });
+    const { imageUrl, imageBase64, prompt } = req.body || {};
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Falta OPENAI_API_KEY en el entorno" });
+    }
+    if (!imageUrl && !imageBase64) {
+      return res.status(400).json({ error: "Falta imageUrl o imageBase64" });
+    }
 
-    const completion = await axios.post(
+    // 1) Convertimos a data URI (si viene en URL, la descargamos nosotros)
+    let dataUrl;
+    if (imageBase64) {
+      dataUrl = imageBase64.startsWith("data:")
+        ? imageBase64
+        : `data:image/jpeg;base64,${imageBase64}`;
+    } else {
+      const img = await axios.get(imageUrl, { responseType: "arraybuffer" });
+      const mime = img.headers["content-type"] || "image/jpeg";
+      const b64  = Buffer.from(img.data, "binary").toString("base64");
+      dataUrl = `data:${mime};base64,${b64}`;
+    }
+
+    // 2) Llamada al modelo de visión
+    const payload = {
+      model: VISION_MODEL, // gpt-4o por defecto (configurable por env)
+      max_tokens: 400,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: "Eres experto en moda/productos. Devuelve atributos claros y keywords." },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt || "Extrae: categoría, tipo, color, tejido, corte, detalles y keywords." },
+            { type: "image_url", image_url: { url: dataUrl } }
+          ]
+        }
+      ]
+    };
+
+    const { data } = await axios.post(
       "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: "Eres experto en moda/productos. Devuelve atributos claros y palabras clave." },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt || "Extrae: categoría, tipo, color, tejido, corte, detalles y keywords." },
-              { type: "image_url", image_url: { url: imageUrl } }
-            ]
-          }
-        ]
-      },
-      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
+      payload,
+      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" } }
     );
 
-    const attributes = completion.data?.choices?.[0]?.message?.content?.trim() || "";
-    return res.json({ attributes });
+    const text = data?.choices?.[0]?.message?.content?.trim() || "";
+    return res.json({ attributes: text });
   } catch (e) {
-    console.error("❗/vision/analyze", e?.response?.data || e);
-    return res.status(500).json({ error: "Error analizando imagen" });
+    const details = e?.response?.data || { message: e.message };
+    console.error("Vision analyze error:", details);
+    return res.status(500).json({ error: "OpenAI error", details });
   }
 });
 
-/* =========  BÚSQUEDA EN CATÁLOGO (Shopify Storefront) =========
-   Env: SHOPIFY_STORE_DOMAIN, SHOPIFY_STOREFRONT_TOKEN
-   Body: { "query": "faja colombiana negra talla M" }
-*/
+/* =======================
+   BÚSQUEDA EN CATÁLOGO (Shopify)
+======================= */
+// POST /catalog/search
+// Env necesarios: SHOPIFY_STORE_DOMAIN, SHOPIFY_STOREFRONT_TOKEN
+// Body: { "query": "faja colombiana negra talla M" }
 app.post("/catalog/search", async (req, res) => {
   try {
     const { query = "" } = req.body || {};
@@ -110,14 +162,18 @@ app.post("/catalog/search", async (req, res) => {
           products(first: 5, query: $q) {
             edges {
               node {
-                id title handle description
+                id
+                title
+                handle
+                description
                 images(first:1){ edges{ node{ url } } }
                 variants(first:10){
                   edges{ node{
-                    id title availableForSale
+                    id
+                    title
+                    availableForSale
                     price{ amount currencyCode }
-                  }}
-                }
+                  }}}
               }
             }
           }
@@ -158,43 +214,5 @@ app.post("/catalog/search", async (req, res) => {
   }
 });
 
+// Start
 app.listen(PORT, () => console.log(`🚀 Servidor en marcha en puerto ${PORT}`));
-// === IA: ANÁLISIS DE IMAGEN (Vision) — con modelos configurables y mejor logging ===
-app.post("/vision/analyze", async (req, res) => {
-  try {
-    const { imageUrl, prompt } = req.body || {};
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Falta OPENAI_API_KEY en el entorno" });
-    }
-    if (!imageUrl) return res.status(400).json({ error: "Falta imageUrl" });
-
-    const payload = {
-      model: VISION_MODEL,      // <- usa la variable de entorno
-      max_tokens: 400,
-      temperature: 0.2,
-      messages: [
-        { role: "system", content: "Eres experto en moda/productos. Devuelve atributos claros y keywords." },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt || "Extrae: categoría, tipo, color, tejido, corte, detalles distintivos y keywords." },
-            { type: "image_url", image_url: { url: imageUrl } }
-          ]
-        }
-      ]
-    };
-
-    const { data } = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      payload,
-      { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" } }
-    );
-
-    const text = data?.choices?.[0]?.message?.content?.trim() || "";
-    return res.json({ attributes: text });
-  } catch (e) {
-    const details = e?.response?.data || { message: e.message };
-    console.error("OpenAI vision error:", details);
-    return res.status(500).json({ error: "OpenAI error", details });
-  }
-});
