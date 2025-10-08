@@ -8,7 +8,8 @@ import fs from "fs";
 import path from "path";
 
 dotenv.config();
-const app = express();
+const TEXT_MODEL   = process.env.OPENAI_TEXT_MODEL   || "gpt-5";
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -82,12 +83,7 @@ app.post("/voice/transcribe", async (req, res) => {
   }
 });
 
-/* =======================
-   IA – VISIÓN (análisis de imagen)
-   Evita 'error while downloading' usando data URI
-======================= */
-// POST /vision/analyze
-// Body: { imageUrl: "https://...",  (o)  imageBase64: "data:...base64...",  prompt?: "..." }
+/// === IA: ANÁLISIS DE IMAGEN (Vision) — con límite de tamaño y mejor logging ===
 app.post("/vision/analyze", async (req, res) => {
   try {
     const { imageUrl, imageBase64, prompt } = req.body || {};
@@ -98,22 +94,31 @@ app.post("/vision/analyze", async (req, res) => {
       return res.status(400).json({ error: "Falta imageUrl o imageBase64" });
     }
 
-    // 1) Convertimos a data URI (si viene en URL, la descargamos nosotros)
+    const MAX_IMAGE_BYTES = parseInt(process.env.MAX_IMAGE_BYTES || "4000000", 10); // ~4 MB
     let dataUrl;
+
     if (imageBase64) {
-      dataUrl = imageBase64.startsWith("data:")
-        ? imageBase64
-        : `data:image/jpeg;base64,${imageBase64}`;
+      const base = imageBase64.startsWith("data:") ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
+      // estimar tamaño a partir de base64 (4/3 del binario)
+      const b64 = base.split(",")[1] || "";
+      const estBytes = Math.floor((b64.length * 3) / 4);
+      if (estBytes > MAX_IMAGE_BYTES) {
+        return res.status(413).json({ error: "Imagen demasiado grande (base64)", bytes: estBytes, max: MAX_IMAGE_BYTES });
+      }
+      dataUrl = base;
     } else {
       const img = await axios.get(imageUrl, { responseType: "arraybuffer" });
       const mime = img.headers["content-type"] || "image/jpeg";
+      const bytes = img.data?.length || 0;
+      if (bytes > MAX_IMAGE_BYTES) {
+        return res.status(413).json({ error: "Imagen demasiado grande (URL)", bytes, max: MAX_IMAGE_BYTES });
+      }
       const b64  = Buffer.from(img.data, "binary").toString("base64");
       dataUrl = `data:${mime};base64,${b64}`;
     }
 
-    // 2) Llamada al modelo de visión
     const payload = {
-      model: VISION_MODEL, // gpt-4o por defecto (configurable por env)
+      model: VISION_MODEL, // p.ej. gpt-4o (configurable por env)
       max_tokens: 400,
       temperature: 0.2,
       messages: [
@@ -137,12 +142,15 @@ app.post("/vision/analyze", async (req, res) => {
     const text = data?.choices?.[0]?.message?.content?.trim() || "";
     return res.json({ attributes: text });
   } catch (e) {
-    const details = e?.response?.data || { message: e.message };
-    console.error("Vision analyze error:", details);
+    // Decodifica errores tipo Buffer para ver el mensaje real
+    let details = e?.response?.data;
+    if (Buffer.isBuffer(details)) {
+      try { details = details.toString("utf8"); } catch { /* ignore */ }
+    }
+    console.error("Vision analyze error:", details || e.message);
     return res.status(500).json({ error: "OpenAI error", details });
   }
 });
-
 /* =======================
    BÚSQUEDA EN CATÁLOGO (Shopify)
 ======================= */
