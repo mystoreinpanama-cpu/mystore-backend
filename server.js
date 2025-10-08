@@ -8,6 +8,13 @@ import fs from "fs";
 import path from "path";
 import Jimp from "jimp";
 
+// === NUEVO (audio robusto) ===
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
+import { fileTypeFromBuffer } from "file-type";
+ffmpeg.setFfmpegPath(ffmpegPath);
+// ==============================
+
 dotenv.config();
 
 // ===== Modelos configurables =====
@@ -120,28 +127,90 @@ app.post("/chat/complete", async (req, res) => {
   }
 });
 
-/* ───────────────────────── Voz → Texto (Whisper) ───────────────────────── */
+/* ───────────────────────── Voz → Texto (Whisper) — ROBUSTO ───────────────────────── */
+/*
+  Acepta: audioUrl (https directo, normaliza Dropbox) o audioBase64 (data URI o base64 crudo).
+  Descarga/guarda el archivo, valida que sea audio/video real (MIME y/o contenido),
+  y LO CONVIERTE SIEMPRE a WAV 16 kHz mono con ffmpeg antes de enviarlo a Whisper.
+*/
 app.post("/voice/transcribe", async (req, res) => {
   try {
-    const { audioUrl } = req.body || {};
+    const { audioUrl, audioBase64, filename = "input.m4a" } = req.body || {};
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Falta OPENAI_API_KEY" });
-    if (!audioUrl) return res.status(400).json({ error: "Falta audioUrl" });
+    if (!audioUrl && !audioBase64)   return res.status(400).json({ error: "Falta audioUrl o audioBase64" });
 
-    const r = await axios.get(audioUrl, { responseType: "arraybuffer" });
-    const tmp = path.join("/tmp", `audio_${Date.now()}.ogg`);
-    fs.writeFileSync(tmp, r.data);
+    // Normaliza enlaces de Dropbox a "raw"
+    const normalizeAudioUrl = (u) => {
+      try {
+        const url = new URL(u);
+        if (url.hostname === "www.dropbox.com") {
+          url.hostname = "dl.dropboxusercontent.com";
+          url.searchParams.delete("dl");
+        }
+        return url.toString();
+      } catch { return u; }
+    };
+
+    const inExt = (filename.split(".").pop() || "m4a").toLowerCase();
+    const tmpIn  = `/tmp/in_${Date.now()}.${inExt}`;
+    const tmpOut = `/tmp/out_${Date.now()}.wav`;
+
+    if (audioBase64) {
+      const b64 = audioBase64.startsWith("data:") ? (audioBase64.split(",")[1] || "") : audioBase64;
+      fs.writeFileSync(tmpIn, Buffer.from(b64, "base64"));
+    } else {
+      const url = normalizeAudioUrl(audioUrl);
+      const r = await axios.get(url, {
+        responseType: "arraybuffer",
+        headers: { "Accept": "audio/*,video/*", "User-Agent": "mystore-backend/1.0" },
+        maxRedirects: 5
+      });
+
+      // Detecta MIME real por contenido (aunque el host mienta)
+      const type = await fileTypeFromBuffer(r.data).catch(() => null);
+      const headerCT = (r.headers["content-type"] || "").toLowerCase();
+      const isAudioVideo =
+        (headerCT.startsWith("audio/") || headerCT.startsWith("video/")) ||
+        (type && (type.mime.startsWith("audio/") || type.mime.startsWith("video/")));
+
+      if (!isAudioVideo) {
+        let sample = "";
+        try { sample = Buffer.from(r.data).toString("utf8").slice(0, 160); } catch {}
+        return res.status(502).json({
+          error: "La URL no devolvió audio/video",
+          contentType: headerCT || (type?.mime || "desconocido"),
+          sample
+        });
+      }
+      fs.writeFileSync(tmpIn, r.data);
+    }
+
+    // Transcodifica SIEMPRE a WAV 16 kHz mono (formato “a prueba de todo” para Whisper)
+    await new Promise((resolve, reject) => {
+      ffmpeg(tmpIn)
+        .noVideo()
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .format("wav")
+        .on("end", resolve)
+        .on("error", reject)
+        .save(tmpOut);
+    });
 
     const form = new FormData();
     form.append("model", "whisper-1");
-    form.append("file", fs.createReadStream(tmp));
+    form.append("file", fs.createReadStream(tmpOut));
 
     const { data } = await axios.post("https://api.openai.com/v1/audio/transcriptions", form, {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, ...form.getHeaders() }
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, ...form.getHeaders() },
+      maxBodyLength: Infinity
     });
-    try { fs.unlinkSync(tmp); } catch {}
-    res.json({ text: data.text });
+
+    try { fs.unlinkSync(tmpIn);  } catch {}
+    try { fs.unlinkSync(tmpOut); } catch {}
+    return res.json({ text: data.text });
   } catch (e) {
-    res.status(500).json({ error: "Error transcribiendo audio", details: e?.response?.data || e.message });
+    return res.status(500).json({ error: "Error transcribiendo audio", details: e?.response?.data || e.message });
   }
 });
 
