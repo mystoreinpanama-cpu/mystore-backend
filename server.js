@@ -114,7 +114,68 @@ app.post("/webhook", (req, res) => {
 });
 
 /* ───────────────────────── Chat de texto ───────────────────────── */
+/* ───────────────────────── Chat de texto ───────────────────────── */
+
 app.post("/chat/complete", async (req, res) => {
+  try {
+    const {
+      message, // mensaje simple (texto) enviado desde Make o ManyChat
+      messages = [],
+      system = "Eres el asistente de MY STORE IN PANAMÁ.",
+      temperature,
+      model // opcional para override puntual
+    } = req.body || {};
+
+    const modelToUse = (model || TEXT_MODEL || "").trim() || "gpt-4o-mini";
+    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-5");
+
+    const payload = {
+      model: modelToUse,
+      messages: [
+        { role: "system", content: system },
+        ...messages,
+        ...(message ? [{ role: "user", content: message }] : [])
+      ],
+      temperature: typeof temperature === "number" ? temperature : 0.3
+    };
+
+    const { data } = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      payload,
+      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
+    );
+
+    const output = data?.choices?.[0]?.message?.content?.trim() || "No se generó respuesta.";
+
+    // 🔍 Intent Detection: identifica si es una búsqueda de producto
+    const lower = output.toLowerCase();
+    let intent = "mensaje_general";
+    if (lower.includes("producto") || lower.includes("faja") || lower.includes("comprar") || lower.includes("modelo")) {
+      intent = "buscar_producto";
+    }
+
+    // 🔢 Ejemplo de product_id simulado (esto se llenará desde Shopify o Render)
+    let product_id = null;
+    if (intent === "buscar_producto") {
+      product_id = "gid://shopify/Product/1234567890123";
+    }
+
+    // 🧩 Devuelve estructura estandarizada
+    return res.json({
+      reply: output,
+      intent,
+      product_id
+    });
+  } catch (err) {
+    console.error("❌ Error en /chat/complete:", err);
+    res.status(500).json({
+      reply: "Lo siento, ocurrió un error al generar la respuesta.",
+      intent: "error",
+      error: err.message
+    });
+  }
+});
+
   try {
     const {
       messages = [],
