@@ -70,7 +70,7 @@ function buildQueryFromAttributes(a = {}) {
   switch ((a.domain || "").toLowerCase()) {
     case "apparel":
     case "shapewear":
-      return add(a.category, a.type, a.style, a.length, a.fit, flat(a.colors).join(" "), flat(a.materials).join(" "), flat(a.details).join(" "), a.keywords);
+      return add(a.category, a.type, a.length, a.fit, a.style, flat(a.colors).join(" "), flat(a.materials).join(" "), flat(a.details).join(" "), a.keywords);
     case "electronics":
     case "phones":
     case "phone_parts":
@@ -114,7 +114,6 @@ app.post("/webhook", (req, res) => {
 });
 
 /* ───────────────────────── Chat de texto ───────────────────────── */
-
 app.post("/chat/complete", async (req, res) => {
   try {
     const {
@@ -126,7 +125,6 @@ app.post("/chat/complete", async (req, res) => {
     } = req.body || {};
 
     const modelToUse = (model || TEXT_MODEL || "").trim() || "gpt-4o-mini";
-    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-5");
 
     const payload = {
       model: modelToUse,
@@ -146,25 +144,26 @@ app.post("/chat/complete", async (req, res) => {
 
     const output = data?.choices?.[0]?.message?.content?.trim() || "No se generó respuesta.";
 
-    // 🔍 Intent Detection: identifica si es una búsqueda de producto
+    // 🔍 Detección básica de intención
     const lower = output.toLowerCase();
     let intent = "mensaje_general";
-    if (lower.includes("producto") || lower.includes("faja") || lower.includes("comprar") || lower.includes("modelo")) {
+    if (
+      lower.includes("producto") ||
+      lower.includes("faja") ||
+      lower.includes("comprar") ||
+      lower.includes("modelo")
+    ) {
       intent = "buscar_producto";
     }
 
-    // 🔢 Ejemplo de product_id simulado (esto se llenará desde Shopify o Render)
+    // 🔢 Ejemplo de ID temporal
     let product_id = null;
     if (intent === "buscar_producto") {
       product_id = "gid://shopify/Product/1234567890123";
     }
 
-    // 🧩 Devuelve estructura estandarizada
-    return res.json({
-      reply: output,
-      intent,
-      product_id
-    });
+    // 🧩 Respuesta estandarizada
+    return res.json({ reply: output, intent, product_id });
   } catch (err) {
     console.error("❌ Error en /chat/complete:", err);
     res.status(500).json({
@@ -172,38 +171,6 @@ app.post("/chat/complete", async (req, res) => {
       intent: "error",
       error: err.message
     });
-  }
-});
-
-  try {
-    const {
-      messages = [],
-      system = "Eres el asistente de MY STORE IN PANAMÁ.",
-      temperature,
-      model // opcional para override puntual
-    } = req.body || {};
-
-    const modelToUse = (model || TEXT_MODEL || "").trim();
-    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-5");
-
-    const payload = {
-      model: modelToUse,
-      messages: [{ role: "system", content: system }, ...messages]
-    };
-
-    // GPT-5: no enviar temperature/response_format ni otros hiperparámetros
-    if (!isGPT5) {
-      const tempToUse = typeof temperature === "number" ? temperature : 0.3;
-      payload.temperature = tempToUse;
-    }
-
-    const { data } = await axios.post("https://api.openai.com/v1/chat/completions", payload, {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
-    });
-
-    res.json({ output: data?.choices?.[0]?.message?.content || "" });
-  } catch (e) {
-    res.status(500).json({ error: "OpenAI chat error", details: e?.response?.data || e.message });
   }
 });
 
