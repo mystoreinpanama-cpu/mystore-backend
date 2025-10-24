@@ -119,17 +119,7 @@ function buildQueryFromAttributes(a = {}) {
   }
 }
 
-const SYS_SCHEMA = `Eres un analista de PRODUCTOS GENERALES para ecommerce (moda, fajas, electrónica, repuestos auto/cel, cámaras, computación, muebles, hogar, libros, deporte, juguetes, belleza, etc).
-Devuelves SOLO JSON (sin texto adicional). Si no reconoces el ítem, usa domain:"other" y rellena keywords.
-{
-  "domain": "apparel|shapewear|electronics|phones|phone_parts|auto_parts|cameras|computers|furniture|home|books|beauty|toys|sports|other",
-  "category": "", "type": "", "brand": "", "model": "",
-  "colors": [], "materials": [], "details": [], "features": [],
-  "compatibility": [], "part_number": "",
-  "size": "", "length": "", "fit": "", "style": "",
-  "title": "", "author": "", "language": "", "topic": "",
-  "keywords": ""
-}`;
+const SYS_SCHEMA = `Eres un analista de PRODUCTOS GENERALES para ecommerce (moda, fajas, electrónica, repuestos auto/cel, cámaras, computación, muebles, hogar, libros, deporte, juguetes, belleza, etc).\nDevuelves SOLO JSON (sin texto adicional). Si no reconoces el ítem, usa domain:"other" y rellena keywords.\n{\n  "domain": "apparel|shapewear|electronics|phones|phone_parts|auto_parts|cameras|computers|furniture|home|books|beauty|toys|sports|other",\n  "category": "", "type": "", "brand": "", "model": "",\n  "colors": [], "materials": [], "details": [], "features": [],\n  "compatibility": [], "part_number": "",\n  "size": "", "length": "", "fit": "", "style": "",\n  "title": "", "author": "", "language": "", "topic": "",\n  "keywords": ""\n}`;
 
 /* ──────────────────────── Salud / Diagnóstico ──────────────────────── */
 app.get("/", (_, res) =>
@@ -193,12 +183,13 @@ app.post("/chat/complete", async (req, res) => {
       product_id = "gid://shopify/Product/1234567890123";
     }
 
-    // 🧩 Respuesta estandarizada
-    return res.json({ reply: output, intent, product_id });
+    // 🧩 Respuesta estandarizada con alias 'text'
+    return res.json({ reply: output, text: output, intent, product_id });
   } catch (err) {
     console.error("❌ Error en /chat/complete:", err);
     return res.status(500).json({
       reply: "Lo siento, ocurrió un error al generar la respuesta.",
+      text: "Lo siento, ocurrió un error al generar la respuesta.",
       intent: "error",
       error: err?.response?.data || err.message,
     });
@@ -269,7 +260,14 @@ app.post("/voice/transcribe", async (req, res) => {
 
     // Transcodifica a WAV 16 kHz mono
     await new Promise((resolve, reject) => {
-      ffmpeg(tmpIn).noVideo().audioChannels(1).audioFrequency(16000).format("wav").on("end", resolve).on("error", reject).save(tmpOut);
+      ffmpeg(tmpIn)
+        .noVideo()
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .format("wav")
+        .on("end", resolve)
+        .on("error", reject)
+        .save(tmpOut);
     });
 
     const form = new FormData();
@@ -436,9 +434,9 @@ app.post("/by-image/search", async (req, res) => {
     const { data: a } = await axios.post(`${req.protocol}://${req.get("host")}/vision/analyze`, req.body, {
       headers: { "Content-Type": "application/json" },
     });
-    const attrs = a?.attributes || {};
-    const query = buildQueryFromAttributes(attrs);
-    let results = [];
+    const attrs  = a?.attributes || {};
+    const query  = buildQueryFromAttributes(attrs);
+    let results  = [];
 
     if (process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_STOREFRONT_TOKEN && query) {
       const { data: s } = await axios.post(
