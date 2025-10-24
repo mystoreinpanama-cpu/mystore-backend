@@ -114,7 +114,6 @@ app.post("/webhook", (req, res) => {
 });
 
 /* ───────────────────────── Chat de texto ───────────────────────── */
-/* ───────────────────────── Chat de texto ───────────────────────── */
 
 app.post("/chat/complete", async (req, res) => {
   try {
