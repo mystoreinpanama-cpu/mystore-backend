@@ -17,7 +17,7 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 dotenv.config();
 
 // ===== Modelos configurables =====
-const TEXT_MODEL        = process.env.OPENAI_TEXT_MODEL        || "gpt-5";       // conversación
+const TEXT_MODEL        = process.env.OPENAI_TEXT_MODEL        || "gpt-4o-mini";       // conversación
 const VISION_MODEL      = process.env.OPENAI_VISION_MODEL      || "gpt-4o-mini"; // visión estable con JSON Mode
 const STRUCTURE_MODEL   = process.env.OPENAI_STRUCTURE_MODEL   || "gpt-4o-mini"; // para re-estructurar JSON si hace falta
 
@@ -126,7 +126,7 @@ app.post("/chat/complete", async (req, res) => {
     } = req.body || {};
 
     const modelToUse = (model || TEXT_MODEL || "").trim() || "gpt-4o-mini";
-    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-5");
+    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-4o-mini");
 
     const payload = {
       model: modelToUse,
@@ -299,7 +299,7 @@ app.post("/vision/analyze", async (req, res) => {
 
     // 3) Fallback: si quedó vacío o sin domain, estructura con STRUCTURE_MODEL
     if (!attrs || !attrs.domain) {
-      const isGPT5Text = (STRUCTURE_MODEL || "").toLowerCase().startsWith("gpt-5");
+      const isGPT5Text = (STRUCTURE_MODEL || "").toLowerCase().startsWith("gpt-4o-mini");
       const payload2 = {
         model: STRUCTURE_MODEL,
         messages: [
@@ -307,7 +307,7 @@ app.post("/vision/analyze", async (req, res) => {
           { role: "user", content: `Estructura a JSON (exacto al esquema) este texto:\n${content || "(sin texto)"}\nDevuelve SOLO JSON.` }
         ]
       };
-      // Solo agregamos response_format si el modelo lo soporta (no GPT-5)
+      // Solo agregamos response_format si el modelo lo soporta (no gpt-4o-mini)
       if (!isGPT5Text) payload2.response_format = { type: "json_object" };
 
       const r2 = await axios.post("https://api.openai.com/v1/chat/completions", payload2, {
