@@ -124,9 +124,13 @@ const payload = {
     { role: "system", content: system },
     ...messages,
     ...(message ? [{ role: "user", content: message }] : [])
-  ],
-  temperature: typeof temperature === "number" ? temperature : 0.3
+  ]
 };
+
+// Solo agregar temperature si NO es GPT-5
+if (!isGPT5) {
+  payload.temperature = typeof temperature === "number" ? temperature : 0.3;
+}
 
 const { data } = await axios.post(
   "https://api.openai.com/v1/chat/completions",
