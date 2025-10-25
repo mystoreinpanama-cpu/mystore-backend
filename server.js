@@ -201,18 +201,6 @@ app.post("/chat/complete", async (req, res) => {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     });
 
-    res.json({ output: data?.choices?.[0]?.message?.content || "" });
-  } catch (e) {
-    res.status(500).json({ error: "OpenAI chat error", details: e?.response?.data || e.message });
-  }
-});
-
-/* ───────────────────────── Voz → Texto (Whisper) — ROBUSTO ───────────────────────── */
-/*
-  Acepta: audioUrl (https directo; normaliza Dropbox) o audioBase64 (data URI o base64 crudo).
-  Descarga/guarda, valida que sea audio/video real (MIME y/o contenido),
-  y convierte SIEMPRE a WAV 16 kHz mono con ffmpeg antes de enviarlo a Whisper.
-*/
 app.post("/voice/transcribe", async (req, res) => {
   try {
     const { audioUrl, audioBase64, filename = "input.m4a" } = req.body || {};
