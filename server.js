@@ -175,31 +175,7 @@ app.post("/chat/complete", async (req, res) => {
   }
 });
 
-  try {
-    const {
-      messages = [],
-      system = "Eres el asistente de MY STORE IN PANAMÁ.",
-      temperature,
-      model // opcional para override puntual
-    } = req.body || {};
 
-    const modelToUse = (model || TEXT_MODEL || "").trim();
-    const isGPT5 = modelToUse.toLowerCase().startsWith("gpt-5");
-
-    const payload = {
-      model: modelToUse,
-      messages: [{ role: "system", content: system }, ...messages]
-    };
-
-    // GPT-5: no enviar temperature/response_format ni otros hiperparámetros
-    if (!isGPT5) {
-      const tempToUse = typeof temperature === "number" ? temperature : 0.3;
-      payload.temperature = tempToUse;
-    }
-
-    const { data } = await axios.post("https://api.openai.com/v1/chat/completions", payload, {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
-    });
 
 app.post("/voice/transcribe", async (req, res) => {
   try {
